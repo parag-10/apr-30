@@ -12,6 +12,11 @@ dist/
 # Logs
 logs/
 *.log
+# Always track the Copilot history log (override the logs/ rule above)
+!.github/logs/
+!.github/logs/copilot-history.json
+# Internal marker used by hook scripts — never commit this
+.github/logs/.hook-staged
 
 npm-debug.log*
 pnpm-debug.log*
