@@ -36,3 +36,5 @@ coverage/
 
 # NestJS specific
 .nestrc
+
+.github/logs/*

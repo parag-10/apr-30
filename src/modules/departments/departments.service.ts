@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Department } from '../../shared/interfaces/department.interface';
 import { InMemoryStore } from '../../store/in-memory.store';
 import { CreateDepartmentDto } from './dto/create-department.dto';
@@ -43,7 +43,15 @@ export class DepartmentsService {
   remove(id: string): void {
     this.findOne(id); // throws if not found
 
-    // ⚠️ BUG-07 is planted here — no employee check before deletion
+    const assignedEmployees = this.store.employees.filter(
+      (e) => e.departmentId === id,
+    );
+    if (assignedEmployees.length > 0) {
+      throw new ConflictException(
+        `Cannot delete department: ${assignedEmployees.length} employee(s) are still assigned to it.`,
+      );
+    }
+
     this.store.departments = this.store.departments.filter((d) => d.id !== id);
   }
 }
