@@ -1,0 +1,5 @@
+{
+  "files.readonlyInclude": {
+    ".github/logs/copilot-history.json": true
+  }
+}
