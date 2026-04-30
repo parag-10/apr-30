@@ -12,7 +12,9 @@ dist/
 # Logs
 logs/
 *.log
-
+!.github/logs/
+!.github/logs/copilot-history.json
+.github/logs/.hook-staged
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
@@ -23,7 +25,6 @@ yarn-error.log*
 Thumbs.db
 
 # IDE
-.vscode/
 .idea/
 *.suo
 *.ntvs*

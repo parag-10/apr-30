@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Log user messages to per-session files with metadata in JSON format
+# Log user messages to a single repo-tracked JSON history file
 
 set -euo pipefail
 
@@ -9,15 +9,33 @@ INPUT=$(cat)
 # Create logs directory if it doesn't exist
 LOGS_DIR=".github/logs"
 mkdir -p "$LOGS_DIR"
+LOG_FILE="$LOGS_DIR/copilot-history.json"
 
-# Extract session ID and create session-specific log file
+make_log_writable() {
+  [ -f "$LOG_FILE" ] && chmod u+w "$LOG_FILE" 2>/dev/null || true
+}
+
+make_log_readonly() {
+  [ -f "$LOG_FILE" ] && chmod a-w "$LOG_FILE" 2>/dev/null || true
+}
+
+ensure_log_file() {
+  if [ ! -f "$LOG_FILE" ]; then
+    jq -n '{ sessions: [] }' > "$LOG_FILE"
+  fi
+}
+
+make_log_writable
+ensure_log_file
+trap make_log_readonly EXIT
+
+# Extract session ID
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 CONVERSATION_ID=$(echo "$INPUT" | jq -r '.conversation_id // "unknown"')
 TIMESTAMP=$(echo "$INPUT" | jq -r '.timestamp // ""')
 if [ -z "$TIMESTAMP" ]; then
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 fi
-SESSION_FILE="$LOGS_DIR/copilot-session-${SESSION_ID}.json"
 
 # Extract message and cwd
 USER_MESSAGE=$(echo "$INPUT" | jq -r '.prompt // "No message"')
@@ -32,6 +50,10 @@ USER_EMAIL=$(git config user.email 2>/dev/null || echo "unknown@localhost")
 WORKSPACE=$(basename "$CWD" 2>/dev/null || echo "unknown")
 WORKSPACE_PATH="$CWD"
 
+PROMPT_COUNT=0
+PROMPT_COUNT=$(jq --arg session_id "$SESSION_ID" '[.sessions[] | select(.session.id == $session_id) | .messages[]? | select(.type == "prompt")] | length' "$LOG_FILE" 2>/dev/null || echo "0")
+TURN_INDEX=$((PROMPT_COUNT + 1))
+
 # Parse transcript for richer context
 COPILOT_VERSION="unknown"
 VSCODE_VERSION="unknown"
@@ -41,8 +63,9 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   TRANSCRIPT=$(jq -s '.' "$TRANSCRIPT_PATH" 2>/dev/null || echo "[]")
   COPILOT_VERSION=$(echo "$TRANSCRIPT" | jq -r '[.[] | select(.type == "session.start")] | last | .data.copilotVersion // "unknown"')
   VSCODE_VERSION=$(echo "$TRANSCRIPT" | jq -r '[.[] | select(.type == "session.start")] | last | .data.vscodeVersion // "unknown"')
-  # Match by content so we get THIS turn's attachments, not a prior turn's
-  ATTACHMENTS=$(echo "$TRANSCRIPT" | jq --arg msg "$USER_MESSAGE" '[.[] | select(.type == "user.message" and .data.content == $msg)] | last | .data.attachments // []' 2>/dev/null || echo "[]")
+  ATTACHMENTS=$(echo "$TRANSCRIPT" | jq --argjson prompt_index "$PROMPT_COUNT" '
+    ([.[] | select(.type == "user.message")])[$prompt_index].data.attachments // []
+  ' 2>/dev/null || echo "[]")
 fi
 
 # Create JSON log entry
@@ -51,6 +74,7 @@ LOG_ENTRY=$(jq -n \
   --arg conversation_id "$CONVERSATION_ID" \
   --arg timestamp "$TIMESTAMP" \
   --arg type "prompt" \
+  --argjson turn_index "$TURN_INDEX" \
   --arg username "$USERNAME" \
   --arg email "$USER_EMAIL" \
   --arg project "$WORKSPACE" \
@@ -64,6 +88,7 @@ LOG_ENTRY=$(jq -n \
     conversation_id: $conversation_id,
     timestamp: $timestamp,
     type: $type,
+    turn_index: $turn_index,
     user: {
       name: $username,
       email: $email
@@ -82,31 +107,42 @@ LOG_ENTRY=$(jq -n \
     }
   }')
 
-# Initialize file with session metadata if it doesn't exist
-if [ ! -f "$SESSION_FILE" ]; then
-  jq -n \
-    --arg id "$SESSION_ID" \
-    --arg started "$TIMESTAMP" \
-    --arg username "$USERNAME" \
-    --arg email "$USER_EMAIL" \
-    --arg project "$WORKSPACE" \
-    --arg workspace "$WORKSPACE_PATH" \
-    '{
-      session: {
-        id: $id,
-        started: $started,
-        user: { name: $username, email: $email },
-        workspace: { project: $project, path: $workspace }
-      },
-      messages: []
-    }' > "$SESSION_FILE"
-fi
+# Ensure the session exists and append the prompt entry inside the single history file
+jq \
+  --arg session_id "$SESSION_ID" \
+  --arg started "$TIMESTAMP" \
+  --arg username "$USERNAME" \
+  --arg email "$USER_EMAIL" \
+  --arg project "$WORKSPACE" \
+  --arg workspace "$WORKSPACE_PATH" \
+  --argjson entry "$LOG_ENTRY" \
+  '
+    if any(.sessions[]?; .session.id == $session_id) then
+      .sessions |= map(
+        if .session.id == $session_id then
+          .messages += [$entry]
+        else
+          .
+        end
+      )
+    else
+      .sessions += [{
+        session: {
+          id: $session_id,
+          started: $started,
+          user: { name: $username, email: $email },
+          workspace: { project: $project, path: $workspace }
+        },
+        messages: [$entry]
+      }]
+    end
+  ' "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
 
-# Append message to messages array
-jq --argjson entry "$LOG_ENTRY" '.messages += [$entry]' "$SESSION_FILE" > "$SESSION_FILE.tmp" && mv "$SESSION_FILE.tmp" "$SESSION_FILE"
+# Mark this as a legitimate hook write so the pre-commit guard allows it
+touch "$(dirname "$LOG_FILE")/.hook-staged"
 
-# Stage the log so it appears in git changes
-git add "$SESSION_FILE" 2>/dev/null || true
+# Stage the single tracked log file so it appears in git changes
+git add "$LOG_FILE" 2>/dev/null || true
 
 # Return success
 echo '{"continue": true}'

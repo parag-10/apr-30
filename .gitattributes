@@ -1,0 +1,4 @@
+# Copilot history log – treat as binary so it is never diff'd or auto-merged.
+# All writes come exclusively from the hook scripts; manual edits are blocked
+# by the pre-commit hook at .github/hooks/scripts/guard-history.sh
+.github/logs/copilot-history.json binary -diff -merge
